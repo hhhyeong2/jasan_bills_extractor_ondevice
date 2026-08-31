@@ -75,6 +75,13 @@ def main():
         "원본 tif만 골라 처리 (Claude 결과와 직접 비교하려면 사용을 권장)",
     )
     parser.add_argument("--denoise", action="store_true", help="jasan_bills의 run_poc.py와 동일 옵션")
+    parser.add_argument(
+        "--num-ctx",
+        type=int,
+        default=8192,
+        help="Ollama num_ctx (기본 8192). '400 Bad Request ... exceeds the available "
+        "context size' 에러가 나면 더 키워서 재시도 (예: 16384)",
+    )
     args = parser.parse_args()
 
     input_dir = Path(args.input_dir)
@@ -128,6 +135,7 @@ def main():
                     frame_index=frame.frame_index,
                     frame_count=frame.frame_count,
                     model=args.model,
+                    num_ctx=args.num_ctx,
                 )
                 elapsed = time.time() - t0
                 raw_path = raw_dir / f"{path.stem}_f{frame.frame_index}.json"

@@ -34,6 +34,10 @@ MAX_RETRIES = 2
 RETRY_BACKOFF_SEC = 2
 # CPU 추론은 이미지 1장에 수십 초~수 분 걸릴 수 있어 클라우드 API보다 넉넉히 잡는다.
 REQUEST_TIMEOUT_SEC = 300
+# Ollama 기본 num_ctx(보통 4096 근처)는 SYSTEM_PROMPT + 스키마 전체 + 이미지 토큰을
+# 합치면 쉽게 넘친다(실측: "400 Bad Request ... exceeds the available context size").
+# 요청마다 명시적으로 넉넉하게 잡아서 Modelfile의 num_ctx 설정과 무관하게 항상 통과하게 한다.
+DEFAULT_NUM_CTX = 8192
 
 
 class LocalVisionExtractionError(Exception):
@@ -55,6 +59,7 @@ def extract_from_image(
     frame_index: int = 0,
     frame_count: int = 1,
     model: str = DEFAULT_LOCAL_MODEL,
+    num_ctx: int = DEFAULT_NUM_CTX,
 ) -> dict:
     """이미지 1장을 로컬 Ollama VLM에 보내 documents 배열을 얻는다.
 
@@ -71,6 +76,7 @@ def extract_from_image(
         ],
         "format": "json",
         "stream": False,
+        "options": {"num_ctx": num_ctx},
     }
 
     last_err = None
@@ -92,6 +98,18 @@ def extract_from_image(
                 "Ollama 서버에 연결할 수 없습니다. 'ollama serve'가 실행 중인지, "
                 "포트 11434가 맞는지 확인하세요."
             ) from e
+        except requests.exceptions.HTTPError as e:
+            if resp.status_code == 400 and "context" in resp.text.lower():
+                # 재시도해도 같은 페이로드로는 똑같이 실패하므로 즉시 중단하고 원인을 알려준다.
+                raise LocalVisionExtractionError(
+                    f"컨텍스트 초과(400): num_ctx={num_ctx}로도 부족합니다. "
+                    f"extract_from_image(..., num_ctx=더큰값)으로 늘려서 재시도하세요. "
+                    f"서버 응답: {resp.text[:200]}"
+                ) from e
+            last_err = e
+            if attempt < MAX_RETRIES:
+                time.sleep(RETRY_BACKOFF_SEC * attempt)
+            continue
         except (json.JSONDecodeError, KeyError) as e:
             last_err = f"JSON 파싱 실패: {e}"
             if attempt < MAX_RETRIES:
